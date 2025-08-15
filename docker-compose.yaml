@@ -1,0 +1,93 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: medusa_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: medusa-store
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: medusa_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  reverse_proxy:
+    image: traefik
+    container_name: traefik
+    restart: always
+    depends_on:
+      - medusa_backend
+    command:
+      - --providers.docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/acme.json:/etc/traefik/acme.json
+      - ./traefik/traefik.yaml:/etc/traefik/traefik.yaml
+    ports:
+      - "80:80" # Web sites
+      - "443:443" # Web sites
+      - "8080:8080" # Traefik dashboard
+
+  # Medusa Server
+  # This service runs the Medusa backend application and the admin dashboard.
+  medusa_backend:
+    build: ../mercur
+    container_name: medusa_backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/medusa-store
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - ../mercur/apps/backend/.env
+    labels:
+      #- "traefik.http.routers.medusa_backend.rule=Host(`localhost`) && (PathPrefix(`/app`) || PathPrefix(`/store`) || PathPrefix(`/auth`) || PathPrefix(`/admin`) || PathPrefix(`/vendor`))"
+      - "traefik.http.routers.medusa_backend.rule=PathPrefix(`/app`) || PathPrefix(`/store`) || PathPrefix(`/auth`) || PathPrefix(`/admin`) || PathPrefix(`/vendor`)"
+      - traefik.http.routers.medusa_backend.entrypoints=https
+      - traefik.http.routers.medusa_backend.tls=true
+      - traefik.http.services.medusa_backend.loadbalancer.server.port=9000
+      - traefik.http.services.medusa_backend.loadbalancer.sticky=true
+      - traefik.http.services.medusa_backend.loadbalancer.sticky.cookie.name=StickyCookie
+      - traefik.http.services.medusa_backend.loadbalancer.sticky.cookie.secure=true
+      - traefik.http.services.medusa_backend.loadbalancer.sticky.cookie.samesite=strict
+
+  # Vendor Panel
+  vendor_panel:
+    build: ../vendor-panel
+    container_name: medusa_vendor_panel
+    restart: unless-stopped
+    env_file:
+      - ../vendor-panel/.env.local
+    labels:
+      - traefik.http.routers.vendor_panel.rule=Host(`127.0.0.1`)
+      - traefik.http.routers.vendor_panel.entrypoints=https
+      - traefik.http.routers.vendor_panel.tls=true
+      - traefik.http.services.vendor_panel.loadbalancer.server.port=4173
+
+  storefront:
+    build: ../storefront
+    container_name: medusa_storefront
+    restart: unless-stopped
+    env_file:
+      - ../storefront/.env.local
+    labels:
+      - traefik.http.routers.storefront.rule=Host(`localhost`)
+      - traefik.http.routers.storefront.entrypoints=https
+      - traefik.http.routers.storefront.tls=true
+      - traefik.http.services.storefront.loadbalancer.server.port=3000
+
+volumes:
+  postgres_data:
